@@ -1,0 +1,517 @@
+MAIN.c
+
+
+#define F_CPU 16000000UL
+#include <Modbusfncs.h>
+#include <avr/io.h>
+#include <avr/interrupt.h>
+#include <util/atomic.h>
+#include <stdint.h>
+#include <stdbool.h>
+#include <util/delay.h>
+#define FOSC 16000000// Clock Speed
+#define BAUD 9600
+#define MYUBRR ((FOSC/16)/BAUD-1)
+#define BUFFER_SIZE 8
+
+unsigned char
+pull_data(void);
+void
+insert_data(unsigned char data);
+
+//BUFFER related declarations. 
+unsigned char sendbuf[BUFFER_SIZE];
+unsigned char* bufferin = sendbuf;
+unsigned char* bufferout = sendbuf;
+unsigned char volatile count = 0;
+
+unsigned char receivebuf[BUFFER_SIZE];
+unsigned char* rbufferin = receivebuf;
+unsigned char* rbufferout = receivebuf;
+unsigned char volatile rcount = 0;
+
+unsigned char volatile send_size = 8; //not all sent frame is 8-byte
+
+void
+insert_data(unsigned char data)
+{
+
+  *bufferin = data;
+  if (bufferin + 1 == &sendbuf[BUFFER_SIZE])
+    {
+      bufferin = sendbuf;
+      count++;
+      PORTK = ~PORTK;
+
+    }
+  else
+    {
+      bufferin++;
+      count++;
+    }
+}
+
+unsigned char
+pull_data(void)
+{
+  unsigned char data = *bufferout;
+  if (bufferout + 1 == &sendbuf[BUFFER_SIZE])
+    bufferout = sendbuf;
+  else
+    bufferout++;
+  count--;
+  return data;
+}
+
+bool
+Is_full(void)
+{
+  return (count == BUFFER_SIZE);
+}
+
+void
+rinsert_data(unsigned char data)
+{
+  *rbufferin = data;
+  if (rbufferin + 1 == &receivebuf[BUFFER_SIZE])
+    rbufferin = receivebuf;
+  else
+    rbufferin++;
+  rcount++;
+}
+
+unsigned char
+rpull_data(void)
+{
+  unsigned char data = *rbufferout;
+  if (rbufferout + 1 == &receivebuf[BUFFER_SIZE])
+    rbufferout = receivebuf;
+  else
+    rbufferout++;
+  rcount--;
+  return data;
+}
+
+bool
+rIs_full(void)
+{
+  return (rcount == BUFFER_SIZE);
+}
+
+ISR(USART1_RX_vect)
+{
+  unsigned char j;
+  j = UDR1;
+  insert_data(j);
+  // UDR0=j;
+
+}
+
+int
+main(void)
+{
+  USART_Init( MYUBRR);
+  UCSR0B |= (1 << RXCIE0);
+  UCSR1B |= (1 << RXCIE1);
+  init_Ex1();  //intitlise PCINT2 interrupt
+  sei();
+  timer_init();
+  DDRB = 0xff;
+  DDRK = 0xff;
+
+  while (1)
+    {
+//unsigned char var;
+      //Touch Switch
+      /*if ( READ_COIL(coilpointer, 0x00, 1)==0)
+       PORTB=0x00;
+       else
+       PORTB=0xff;*/
+
+      //Proximity sensor
+      /*unsigned char var = PINB & (1 << 6);
+      if (var == 1 << 6)
+        {
+          PORTB = PORTB | (1 << 7);
+        }
+      if (var == 0)
+        {
+          PORTB = PORTB & (~(1 << 7));
+        }*/
+
+
+
+/*
+var=PINB & (1<<5); //lowest level sensor input at pin5
+if (var==0){
+    WRITE_COIL(coilpointer, 4, 0x00);
+}
+
+if ( READ_COIL(coilpointer, 4, 1)==0)
+   timer_start();
+   else
+   timer_stop();
+*/
+
+
+
+
+    }
+}
+
+
+
+
+
+TIMER.c
+
+#include <avr/io.h>
+#include <avr/interrupt.h>
+#include <Modbusfncs.h>
+unsigned int volatile time =0;
+void timer_init(void)
+{
+  TCCR1A = 0;     // set entire TCCR1A register to 0
+      TCCR1B = 0;     // same for TCCR1B
+
+      // set compare match register to desired timer count:
+     OCR1A = 7000;
+      // turn on CTC mode:
+      TCCR1B |= (1 << WGM12);
+      // Set CS10 and CS12 bits for 1024 prescaler:
+      TCCR1B |= (1 << CS10);
+      //TCCR1B |= (1 << CS12);
+      // enable timer compare interrupt:
+      TIMSK1 |= (1 << OCIE1A);
+
+}
+ void timer_stop(void){
+OCR1B=0;     // same for TCCR1B
+ }
+
+
+ void timer_start(void){
+   // turn on CTC mode:
+       TCCR1B |= (1 << WGM12);
+       // Set CS10 and CS12 bits for 1024 prescaler:
+       TCCR1B |= (1 << CS10);
+ }
+
+ISR(TIMER1_COMPA_vect)
+{
+ // PORTB|=1<<4;//turn motor on
+ PORTB=~PORTB;
+ time++;
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+#include <Modbusfncs.h>
+#include <util/atomic.h>
+#include <avr/io.h>
+#define BUFFER_SIZE 8
+unsigned char COILS[2];
+unsigned char* coilpointer = COILS;
+unsigned char* CRCptr = receivebuf;
+unsigned char volatile end_size = 0;
+unsigned char uchCRCLo;
+unsigned char uchCRCHi;
+//give starting address=0
+
+unsigned short
+CRC16(unsigned char* puchMsg, unsigned short usDataLen);
+unsigned char
+READ_COIL(unsigned char* coilname, unsigned char starting_add,
+    unsigned char no_of_coils)
+{
+  unsigned char data;
+  data = *(coilpointer + starting_add); //retrives the character at the nth position of the coil array
+  data = data & (~(0xff << no_of_coils));
+  return data;
+}
+//required_add is the number of bit in the byte output value is to either switch it on/off
+void
+WRITE_COIL(unsigned char* coilname, unsigned char required_add,
+    unsigned char output_value)
+{
+  unsigned char data = *coilname;
+  if (output_value == 0x7f)
+    data = data | (0x01 << (required_add));
+  else
+    data = data & (~(0x01 << (required_add)));
+  *coilname = data;
+}
+
+//unsigned char quantity of char in message
+unsigned char
+Readfncode(void)
+{
+  unsigned char data;
+  data = *(sendbuf + 1);
+  return (data);
+}
+
+unsigned char
+Readcoiladd(void)
+{
+  unsigned char data;
+  data = *(sendbuf + 3);
+  return (data);
+}
+
+unsigned char
+Readcoilnum(void)
+{
+  unsigned char data;
+  data = *(sendbuf + 5);
+  return (data);
+}
+
+void
+framemake(void)
+{
+  if (Readfncode() == 0x01)
+    {
+      CRCptr = receivebuf;
+      unsigned char var;
+      var = pull_data();
+      rinsert_data(var);
+
+      var = pull_data();
+      rinsert_data(Readfncode());
+
+      var = pull_data();
+      rinsert_data(0x01);
+
+      var = READ_COIL(coilpointer, pull_data(), Readcoilnum());
+      rinsert_data(var);
+
+      unsigned short var1 = CRC16(CRCptr, rcount);
+      var = var1 & 0xff;
+      //high byte
+      rinsert_data(var);
+
+      var = (unsigned char) (var1 >> 8); //lo byte
+      rinsert_data(var);
+
+      send_size = 6;
+      pull_data();
+      pull_data();
+      pull_data();
+      pull_data();
+      rinsert_data(0);
+      rinsert_data(0);
+    }
+  else if (Readfncode() == 0x05)
+    {
+
+      CRCptr = receivebuf;
+      unsigned char var;
+
+      var = pull_data();
+      rinsert_data(var);
+
+      var = pull_data();
+      rinsert_data(var);
+
+      var = pull_data();
+      rinsert_data(var);
+
+      var = pull_data();
+      rinsert_data(var);
+
+      WRITE_COIL(coilpointer, var, *(sendbuf + 4));
+
+      var = pull_data();
+      rinsert_data(var);
+
+      var = pull_data();
+      rinsert_data(var);
+
+      var = pull_data();
+      rinsert_data(var);
+
+      var = pull_data();
+      rinsert_data(var);
+      send_size = 8;
+    }
+
+    else {
+rcount=0;//dont invoke uart send
+count=0; //dont go into framemake procedure until new set of data arrives
+    }
+
+}
+ *************CRC TABLES HERE********
+
+
+
+unsigned short
+CRC16(unsigned char* puchMsg, unsigned short usDataLen)
+//unsigned short usDataLen ;  quantity of bytes in message
+{
+  unsigned char uchCRCHi = 0xFF;  //high byte of CRC initialized
+  unsigned char uchCRCLo = 0xFF;  //low byte of CRC initialized
+  unsigned short uIndex; // will index into CRC lookup table
+
+  while (usDataLen--)  //pass through message buffer
+    {
+      uIndex = uchCRCLo ^ *puchMsg++; // calculate the CRC
+      uchCRCLo = uchCRCHi ^ auchCRCHi[uIndex];
+      uchCRCHi = auchCRCLo[uIndex];
+    }
+  return (uchCRCHi << 8 | uchCRCLo);
+}
+
+
+void init_Ex1(void){
+PCICR=1<<PCIE2;//enabling interrupt 2
+SREG=1<<7;//I bit in the SREG register enabled for interrupts
+PCMSK2=1;//pin change mask register PCINT16 enabled
+}
+
+ISR(PCINT2_vect){
+
+
+      framemake();
+      //USART_Transmit0(time);
+      if (rcount == 8) //is send buffer full?
+        {
+
+          ATOMIC_BLOCK(ATOMIC_RESTORESTATE)
+            {
+              for (unsigned char i = 0; i < send_size; i++)
+                {
+
+                  //USART_Transmit1(rpull_data());
+                  USART_Transmit0(rpull_data());
+
+                }
+
+            }
+
+          rbufferout = receivebuf;
+          rcount=0;
+
+
+        }
+
+
+}
+
+
+
+
+
+
+
+USART.c
+
+#include<avr/io.h>
+
+void
+USART_Transmit0(unsigned char data)
+{
+ /* Wait for empty transmit buffer */
+ while (!( UCSR0A & (1 << UDRE0)))
+   ;
+ /* Put data into buffer, sends the data */
+ UDR0 = data;
+}
+void USART_Transmit1(unsigned char data)
+{
+ /* Wait for empty transmit buffer */
+ while (!( UCSR1A & (1 << UDRE1)))
+   ;
+ /* Put data into buffer, sends the data */
+ UDR1 = data;
+}
+void
+USART_Init(unsigned int ubrr)
+{
+
+  /* Set baud rate */
+  UBRR0H = (unsigned char) (ubrr >> 8);
+  UBRR0L = (unsigned char) ubrr;
+  /* Enable receiver and transmitter */
+  UCSR0B = (1 << RXEN0) | (1 << TXEN0);
+  /* Set frame format: 8data, 2stop bit */
+  UCSR0C = (1 << USBS0) | (3 << UCSZ00);
+//USART 1
+
+  UBRR1H = (unsigned char) (ubrr >> 8);
+  UBRR1L = (unsigned char) ubrr;
+  /* Enable receiver and transmitter */
+  UCSR1B = (1 << RXEN1) | (1 << TXEN1);
+  /* Set frame format: 8data, 2stop bit */
+  UCSR1C = (1 << USBS1) | (3 << UCSZ01);
+} // USART_Init
+
+
+
+
+
+MODBUSFUNCS.h
+
+
+#ifndef Modbusfncs_H_
+#define Modbusfncs_H_
+
+#include <stdbool.h>
+
+#define BUFFER_SIZE 8
+
+void USART_Init(unsigned int ubrr);
+void USART_Transmit0(unsigned char data);
+void USART_Transmit1(unsigned char data);
+//write functions
+extern unsigned char* coilpointer;
+extern unsigned char COILS[];
+unsigned char READ_COIL(unsigned char* coilname,unsigned char starting_add,unsigned char no_of_coils);
+void WRITE_COIL(unsigned char* coilname,unsigned char starting_add,unsigned char no_of_coils);
+
+
+//Send buffer dec
+extern unsigned char sendbuf[];
+extern unsigned char* bufferin;
+extern unsigned char* bufferout;
+extern unsigned char volatile count;
+
+//Receive buffer dec
+extern unsigned char receivebuf[];
+extern unsigned char* rbufferin;
+extern unsigned char* rbufferout;
+extern unsigned char volatile rcount;
+extern unsigned int volatile time;
+extern unsigned char* CRCptr;
+
+unsigned char Readfncode(void);
+unsigned char Readcoiladd(void);
+void framemake(void);
+
+void insert_data(unsigned char data);
+ unsigned char pull_data(void);
+bool Is_full(void);
+void
+rinsert_data(unsigned char data);
+unsigned char rpull_data(void);
+bool rIs_full(void);
+
+extern unsigned char volatile send_size;
+
+
+void init_Ex1(void);
+void timer_init(void);
+void timer_stop(void);
+void timer_start(void);
+#endif
